@@ -1,0 +1,97 @@
+
+########################## DNA Viral analysis ##########################
+#### Viral identification
+ nohup ViWrap run --input_metagenome /home/data/viruses/contig.fasta \
+           --input_reads /sample1/reads_1.fastq.gz,sample1/reads_2.fastq.gz \
+           --out_dir viwrap_outdir \
+           --db_dir /home/data1/software/ViWrap/ViWrap_db \
+           --identify_method vb-vs-dvf \
+           --threads 32 \
+           --input_length_limit 5000       \
+           --conda_env_dir /home/data1/software/miniconda3/envs &
+
+ #Rapid genome clustering based on pairwise ANI
+ makeblastdb -in <my_seqs.fna> -dbtype nucl -out <my_db>
+ blastn -query <my_seqs.fna> -db <my_db> -outfmt '6 std qlen slen' -max_target_seqs 10000 -o <my_blast.tsv> -num_threads 32
+ anicalc.py -i <my_blast.tsv> -o <my_ani.tsv>
+ aniclust.py --fna <my_seqs.fna> --ani <my_ani.tsv> --out <my_clusters.tsv> --min_ani 95 --min_tcov 85 --min_qcov 0
+
+# checkV
+ checkv end_to_end CJ-CD-HT.fasta /home/analyze/virome/output_checkv -t 16
+
+# genomad
+ genomad end-to-end --cleanup --splits 8 /home/analyze/virome/virus.fasta genomad_output genomad_db
+
+#### Viral classification
+# NCBI refseq
+ python3 run_RefSeq.py /home/viwrap_outdir /home/software/viwrap/try_scrip/vRhyme_unbinned_viral_gn_dir /home/software/ViWrap_db/Tax_classification_db /home/software/viwrap/try_scrip/pro2viral_gn_map.csv 32 /home/software/viwrap/try_scrip/viwrap_outdir/ref_output
+
+# MarVD2
+ MArVD2.py -i /home/data/virus_final.fasta --load-model rf_model.pkl -o marvd2_result --dbs-dir /home/software/MArVD2/MArVD2_files_zip/other_dbs/ --db-pvog AllvogHMMprofiles.hmm \
+           --db-nr nr.faa --marine-jackhmmer-db pVOG_prots_ref_marine_pVOG.faa --viral-refseq-txt viruses.txt --pvog-dir /home/wenqing/software/MArVD2/MArVD2_files_zip/other_dbs/ \
+           --db-accession2tax /home/software/MArVD2/MArVD2_files_zip/other_dbs/prot.accession2taxid.trimmed
+
+# ViralRecall
+ python viralrecall.py -i /home/data/virus_final.fasta -p /home/data/ViralRecall_result -t 18 -c
+
+#### Viral annotation
+#vs2+DRAMv KBASE
+
+
+#### Viral abundance
+# metagenome mapping
+
+nohup bowtie2-build /virus/vOTU.fasta votu_index &
+nohup bowtie2 -p 10 -x /home/software/mapping/index \
+        -1 sample1/02_CLEAN_READS/04_1_1.fastq.gz \
+        -2 sample1/02_CLEAN_READS/04_1_2.fastq.gz | samtools view -bS - > /data/database/metapop/A6-4-5.bam 
+
+nohup sh -c '
+for folder in /data/clean_data/S*/; do
+    parent_dir=$(basename "$folder")
+    target_dir="/data/clean_data/${parent_dir}/"
+    output_file="/data/metapop/bam/${parent_dir}.bam"
+    
+    bowtie2 -p 10 -x /home/software/mapping/index \
+        -1 "${target_dir}02_CLEAN_READS/04_1_1.fastq.gz" \
+        -2 "${target_dir}02_CLEAN_READS/04_1_2.fastq.gz" | samtools view -bS - > "$output_file" 2>&1
+    
+done
+wait
+' &
+
+#metapop
+metapop --input_samples /data/metapop/bam/ \
+        --reference /data/metapop/ref_genome/ \
+        --norm /data/metapop/virus_bam.tsv \
+        --threads 16
+
+# metatranscription mapping
+salmon index -t virus_final.fasta -i vOTU_index -p 18 
+salmon quant --validateMappings --meta -l IU -i vOTU_index \
+             -1 sample1/02_CLEAN_READS/04_1_1.fastq.gz \
+             -2 sample1/02_CLEAN_READS/04_1_2.fastq.gz \
+             -o salmon_results/sample1.quant 
+             
+             
+#### host prediction
+#iphop database
+iphop predict --fa_file vOTU.fasta --db_dir iphop_db/Test_db_rw/ --out_dir iphop_test_results/test_input_phages_iphop
+
+#iphop self MAG database
+wget https://bitbucket.org/srouxjgi/iphop/downloads/Data_test_add_to_db.tar.gz
+tar -xvf Data_test_add_to_db.tar.gz
+ls Data_test_add_to_db
+gtdbtk de_novo_wf --genome_dir Wetland_MAGs/ --bacteria --outgroup_taxon p__Patescibacteria --out_dir Wetland_MAGs_GTDB-tk_results/ --cpus 32 --force --extension fa
+gtdbtk de_novo_wf --genome_dir Wetland_MAGs/ --archaea --outgroup_taxon p__Altarchaeota --out_dir Wetland_MAGs_GTDB-tk_results/ --cpus 32 --force --extension fa
+cd Data_test_add_to_db
+iphop add_to_db --fna_dir Wetland_MAGs/ --gtdb_dir Wetland_MAGs_GTDB-tk_results/ --out_dir Sept_2021_pub_rw_w_Wetland_hosts --db_dir /path/to/iphop_db/Sept_2021_pub_rw/
+iphop predict --fa_file Input_viral_contigs.fasta --db_dir Sept_2021_pub_rw_w_Wetland_hosts/ --out_dir test_add_db -t 4
+
+
+
+
+#### Others
+
+# https://colab.research.google.com/github/sokrypton/ColabFold/blob/main/AlphaFold2.ipynb
+
